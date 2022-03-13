@@ -23,6 +23,10 @@ TOTAL_GUESSES = 9
 
 # TODO: Do something about duplicate letters. Just got "sassy" as a suggestion.
 
+# TODO: When there are few options left for one word, pick a word that will narrow it down.
+#       Had 2 problems in quordle that had "dread", "dream", "clock", and "chock" as options.
+#       a single word guess that included an "m", "l", and "h" would have solved both at once.
+
 
 class Problem:
 	"""The current state of one of the words to be solved.
@@ -84,22 +88,18 @@ class Problem:
 			# self.possibleWords.remove(word)
 		# print("\n" + str(word) + "\n" + str(containsLetters(word, self.letterCounts)) + "\n" + str(positionsMatch(word, self.positions)))
 	def updateFromResult(self) -> bool:
+		"""Rules out words that couldn't be possible based on the last guess result.
+		`self.possibleWords` is then updated accordingly.
+
+		Returns:
+			bool: Whether or not this problem has been solved. Either because the
+				user responded with "22222" or because there is only one possible
+				word left.
+		"""
 		if self.lastGuessResult == "2" * WORD_LEN:
+			self.possibleWords = [self.guesses[-1]]
 			return True
 		newLetterCounts = {}
-		# for i in range(WORD_LEN):
-		# 	if self.lastGuessResult[i] == '0':
-		# 		self.unusedLetters.add(self.guesses[-1][i])
-		# 		continue
-		# 	newLetterCounts[self.guesses[-1][i]] = newLetterCounts.get(self.guesses[-1][i], 0) + 1
-		# 	if self.lastGuessResult[i] == '1':  # Yellow
-		# 		self.positions[i].difference(self.guesses[-1][i])
-		# 	else:  # Green!
-		# 		self.positions[i] = set([self.guesses[-1][i]])
-		print(self.lastGuessResult)
-		print(self.positions)
-		print(self.guesses)
-		sleep(0.2)
 		for i in re.finditer('2', self.lastGuessResult):
 			self.positions[i.start()] = set([self.guesses[-1][i.start()]])
 			if self.guesses[-1][i.start()] in newLetterCounts.keys():
@@ -107,7 +107,7 @@ class Problem:
 			else:
 				newLetterCounts[self.guesses[-1][i.start()]] = 1
 		for i in re.finditer('1', self.lastGuessResult):
-			self.positions[i.start()].difference(self.guesses[-1][i.start()])
+			self.positions[i.start()].difference_update(self.guesses[-1][i.start()])
 			if self.guesses[-1][i.start()] in newLetterCounts.keys():
 				newLetterCounts[self.guesses[-1][i.start()]] += 1
 			else:
@@ -124,13 +124,10 @@ class Problem:
 			self.letterCounts[key] = max(count, self.letterCounts.get(key, 0))
 		# Weed out words that aren't valid.
 		start = time()
-		# possibleWords = self.manager.list(self.possibleWords)
-		# with mp.Pool(mp.cpu_count()) as pool:
 		self.possibleWords = [word for word in self.possibleWords if self.isValidWord(word)]
 		print("removeIfInvalid done in " + str(time() - start))
 		if len(self.possibleWords) == 1:
 			return True
-		# self.possibleWords = [word for word in possibleWords if word is not None]
 		return False
 
 	def getMatchedLetters(self, letter: str, word: str) -> List[bool]:
@@ -148,6 +145,7 @@ class Problem:
 		# totals = [[l, sum(sums)] for l, sums in positionSums.items()]
 		# totals.sort(key=lambda x: x[1], reverse=True)
 		# [["a", 24],              ["b", 24],                ...]
+
 		# {"a": [10, 0, 0, 3, 11],  "b": [10, 0, 0, 3, 11],  ...}
 		return self.positionSums
 
@@ -155,9 +153,22 @@ class Problem:
 		# TODO: maybe substitute sum for an algorithm that prefers all positions to have high
 		# score instead of totals?
 		default = [0] * WORD_LEN
-		letterScores = [self.positionSums.get(l, default)[i] / word.count(l)
-		                for i, l in enumerate(word)]
-		return word, sum(letterScores) if len(self.possibleWords) != 1 else 1000000
+		letterScores = []
+		repeatLetterMod = 0
+		for i, l in enumerate(word):
+			# reapeadLetterMod is used to skew the algorithm away from choosing words that have
+			# letters in the same position as previous guesses. So "stars" should have a
+			# slightly lower score if "sorry" has already been guessed.
+			repeatLetterMod += any(l == guess[i] for guess in self.guesses)
+			dupeLetterMod = word.count(l)
+			letterScores += [(self.positionSums.get(l, default)[i] /
+			                  (word.count(l) * (1 + repeatLetterMod ** 2) * dupeLetterMod))]
+
+		# TODO: Adjust multiplier in denominator until it stops suggesting so many words that
+		#       have duplicate letters.
+		# letterScores = [self.positionSums.get(l, default)[i] / (2 * word.count(l))
+		#                 for i, l in enumerate(word)]
+		return word, sum(letterScores)
 	def calcWordScores(self) -> Tuple[Dict[str, List[int]],  Set[str]]:
 		start = time()
 		self.calcBasicScores()
@@ -167,7 +178,7 @@ class Problem:
 			wordScores = pool.map(self.getWordScore, self.possibleWords)
 		print("getWordScore done in " + str(time() - start))
 		wordScores.sort(key=lambda x: x[1], reverse=True)
-		wordScores = wordScores[:100]  # TODO: Adjust Trim value
+		wordScores = wordScores[:100]   # TODO: Adjust Trim value
 		return set(pair[0] for pair in wordScores)
 
 
@@ -215,6 +226,9 @@ if __name__ == "__main__":
 					print("UMMMMMM. ERROR???")
 					print("problem " + str(problem.number) + " is marked as having its solution known, "\
 						   "but here is the possibleWords list: " + str(problem.possibleWords))
+					# TODO: THIS CAN BE REACHED BY CHANCE IF THE CORRECT WORD IS CHOSEN BEFORE THE LIST
+					#       GETS NARROWED DOWN. FIXME
+					# NOTE: ^ MAYBE FIXED NOW?
 				if problem.guesses[-1] != problem.possibleWords[0]:
 					unspokenSolves += [problem.possibleWords[0]]
 				continue  # Word solved! wordState to be removed from list.
@@ -225,6 +239,8 @@ if __name__ == "__main__":
 
 		if solvedProblems:
 			[problems.remove(solvedProblem) for solvedProblem in solvedProblems]
+			if not problems:
+				break  # All problems solved!
 
 		if len(unspokenSolves) != 0:
 			guess = unspokenSolves[-1]
